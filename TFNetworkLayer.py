@@ -2558,6 +2558,85 @@ class SliceNdLayer(_ConcatInputLayer):
     super(SliceNdLayer, cls).transform_config_dict(d, network=network, get_layer=get_layer)
     d["start"] = get_layer(d["start"])
 
+class MySliceNdLayer(_ConcatInputLayer):
+  """
+  Copied from SliceNdLayer
+  Reduces the dimension of the time axis on basis of the max value +1 of the 'start' input.
+  Usage Info: Only use start as input.
+  """
+  layer_class = "my_slice_nd"
+  recurrent = True
+
+  def __init__(self, start, size, min_size=None, **kwargs):
+    """
+    Usage Info: Only use start as input.
+    :param start: The maximum value of start +1 is the output time dim.
+    :param kwargs:
+    """
+    super(MySliceNdLayer, self).__init__(**kwargs)
+    from TFUtil import slice_nd, where_bc, expand_multiple_dims, DimensionTag
+    x = self.input_data.copy_as_batch_major()
+    seq_lens = x.get_sequence_lengths() if x.is_time_axis_dynamic() else None
+    self.start = start
+
+
+    start = start.output.get_placeholder_as_batch_major()
+    start = start + 1
+    align = tf.reduce_max(start, axis=1) # time dimension seperate for each batch entry
+    size = tf.reduce_max(align) # max time dimension
+    self.size = size
+
+    # adapt size_placeholder to new time dimension
+    slices = x.placeholder[:, :size]
+    self.output.size_placeholder = x.size_placeholder.copy()
+    if isinstance(size, tf.Tensor):
+      self.output.size_placeholder[0] = align
+      tag = DimensionTag(
+        description="sliced-time:%s" % self.get_absolute_name(),
+        kind=DimensionTag.Types.Spatial)
+      tag.set_tag_on_size_tensor(self.output.size_placeholder[0])
+    else:
+      assert isinstance(size, int)
+      self.output.size_placeholder.pop(0, None)  # static time axis
+    self.output.placeholder = slices
+
+
+  def get_dep_layers(self):
+    """
+    :rtype: list[LayerBase]
+    """
+    return super(MySliceNdLayer, self).get_dep_layers() + [self.start]
+
+  @classmethod
+  def get_out_data_from_opts(cls, name, sources=(), start=None, size=None, **kwargs):
+    """
+    :param str name:
+    :param list[LayerBase] sources:
+    :param LayerBase|None start:
+    :param int|None size:
+    :rtype: Data
+    """
+    input_data = get_concat_sources_data_template(sources).copy_as_batch_major()
+    if start:
+      input_data.beam = SearchBeam.get_combined_beam(input_data.beam, start.output.beam)
+    in_shape = list(input_data.shape)
+    shape = [size] + in_shape[1:]  # (B, size, ...) (w/o batch)
+    out_type = input_data.get_kwargs()
+    out_type["name"] = "%s_output" % name
+    out_type["shape"] = shape
+    out_type["batch_dim_axis"] = 0
+    return Data(**out_type)
+
+  @classmethod
+  def transform_config_dict(cls, d, network, get_layer):
+    """
+    :param dict[str] d:
+    :param TFNetwork.TFNetwork network:
+    :param get_layer:
+    """
+    super(MySliceNdLayer, cls).transform_config_dict(d, network=network, get_layer=get_layer)
+    d["start"] = get_layer(d["start"])
+
 
 class GatherNdLayer(_ConcatInputLayer):
   """
